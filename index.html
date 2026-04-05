@@ -510,6 +510,7 @@ function renderMatchList(){
 
 function renderMatchItem(m){
   var isHost=m.hostEmail===currentUser.email,locked=m.locked;
+  var isSuperAdmin=currentUser&&currentUser.email===SUPER_ADMIN_EMAIL;
   var statusHtml=locked?'<span class="match-status status-locked">🔒 Locked</span>':'<span class="match-status status-open">📝 Open</span>';
   var rows=(m.participants||[]).map(function(p,i){
     var rank=locked?getRank(m.participants,p):null;
@@ -524,7 +525,8 @@ function renderMatchItem(m){
     :'<span style="font-size:12px;color:var(--muted)">Only the host can enter scores.</span>';
   var hostName=(m.participants||[]).find(function(p){return p.email===m.hostEmail;});
   hostName=hostName?hostName.name:m.hostEmail;
-  var delBtn=(currentUser&&currentUser.email===SUPER_ADMIN_EMAIL)?'<button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="deleteMatch(\''+m.id+'\')">🗑️ Delete</button>':'';
+  var renameBtn=(isSuperAdmin&&locked)?'<button class="btn btn-primary btn-sm" onclick="editLockedMatchName(\''+m.id+'\')">✏️ Edit Match Name</button>':'';
+  var delBtn=isSuperAdmin?'<button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="deleteMatch(\''+m.id+'\')">🗑️ Delete</button>':'';
   return'<div class="match-item">'
     +'<div class="match-header" onclick="toggleMatch(\''+m.id+'\')">'
     +'<div style="flex:1;min-width:0"><div class="match-title">'+m.title+'</div>'
@@ -532,7 +534,7 @@ function renderMatchItem(m){
     +'<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">'+statusHtml+'<span class="match-chev" id="chev_'+m.id+'">▾</span></div></div>'
     +'<div class="match-body" id="body_'+m.id+'">'
     +'<table class="score-table" style="margin-top:16px"><thead><tr><th>Rank</th><th>Player</th><th>Match Points</th></tr></thead><tbody>'+rows+'</tbody></table>'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">'+actions+delBtn+'</div>'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">'+actions+renameBtn+delBtn+'</div>'
     +'</div></div>';
 }
 
@@ -549,6 +551,21 @@ function saveScores(matchId,lock){
   var updated=match.participants.map(function(p,i){var inp=document.getElementById("sc_"+matchId+"_"+i);var val=inp?parseFloat(inp.value):p.points;return Object.assign({},p,{points:(isNaN(val)||!inp||inp.value==="")?null:val});});
   if(lock){if(updated.some(function(p){return p.points===null;})){showToast("Enter points for all players before locking","error");return;}if(!confirm("🔒 Lock scores permanently? This CANNOT be undone."))return;}
   db.collection("matches").doc(matchId).update({participants:updated,locked:!!lock}).then(function(){showToast(lock?"🔒 Scores locked forever!":"✅ Scores saved!","success");});
+}
+
+function editLockedMatchName(matchId){
+  var match=matches.find(function(m){return m.id===matchId;});
+  if(!match){showToast("Match not found","error");return;}
+  if(!match.locked){showToast("You can rename only locked matches from this action","error");return;}
+  if(!currentUser||currentUser.email!==SUPER_ADMIN_EMAIL){showToast("Only Super Admin can edit locked match names","error");return;}
+  var nextTitle=prompt("Edit locked match name:",match.title||"");
+  if(nextTitle===null)return;
+  nextTitle=nextTitle.trim();
+  if(!nextTitle){showToast("Match name cannot be empty","error");return;}
+  if(nextTitle===match.title){showToast("No changes made","error");return;}
+  db.collection("matches").doc(matchId).update({title:nextTitle,renamedAt:firebase.firestore.FieldValue.serverTimestamp(),renamedBy:currentUser.email})
+    .then(function(){showToast("✅ Match name updated","success");})
+    .catch(function(e){showToast("Error: "+e.message,"error");});
 }
 
 function getRank(participants,player){

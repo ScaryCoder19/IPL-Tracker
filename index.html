@@ -511,18 +511,28 @@ function renderMatchList(){
 function renderMatchItem(m){
   var isHost=m.hostEmail===currentUser.email,locked=m.locked;
   var isSuperAdmin=currentUser&&currentUser.email===SUPER_ADMIN_EMAIL;
+  var canEditPoints=isSuperAdmin||(!locked&&isHost);
   var statusHtml=locked?'<span class="match-status status-locked">🔒 Locked</span>':'<span class="match-status status-open">📝 Open</span>';
   var rows=(m.participants||[]).map(function(p,i){
     var rank=locked?getRank(m.participants,p):null;
     var bc=rank===1?"rank-1":rank===2?"rank-2":rank===3?"rank-3":"rank-other";
     var rankCell=rank!==null?'<span class="rank-badge '+bc+'">'+rank+'</span>':'<span style="color:var(--muted);font-size:13px">#'+(i+1)+'</span>';
-    var pts=(!locked&&isHost)?'<input class="score-input" type="number" min="0" step="0.5" value="'+(p.points!==null?p.points:'')+'" placeholder="0" id="sc_'+m.id+'_'+i+'"/>'
+    var pts=canEditPoints?'<input class="score-input" type="number" min="0" step="0.5" value="'+(p.points!==null?p.points:'')+'" placeholder="0" id="sc_'+m.id+'_'+i+'"/>'
       :'<span style="font-family:\'Bebas Neue\',sans-serif;font-size:22px;color:var(--gold)">'+(p.points!==null?p.points:'—')+'</span>';
     return'<tr><td>'+rankCell+'</td><td>'+p.name+'<div style="font-size:11px;color:var(--muted)">'+p.email+'</div></td><td>'+pts+'</td></tr>';
   }).join("");
-  var actions=locked?'<span class="locked-tag">✅ Scores finalized & locked forever</span>'
-    :isHost?'<button class="btn btn-primary btn-sm" onclick="saveScores(\''+m.id+'\',false)">💾 Save</button><button class="btn btn-danger btn-sm" style="margin-left:8px" onclick="saveScores(\''+m.id+'\',true)">🔒 Lock & Finalize</button>'
-    :'<span style="font-size:12px;color:var(--muted)">Only the host can enter scores.</span>';
+  var actions='';
+  if(isSuperAdmin){
+    actions='<button class="btn btn-primary btn-sm" onclick="saveScores(\''+m.id+'\',false)">💾 Save Scores</button>'
+      +(locked?'':'<button class="btn btn-danger btn-sm" style="margin-left:8px" onclick="saveScores(\''+m.id+'\',true)">🔒 Lock & Finalize</button>')
+      +'<button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="addMemberToMatch(\''+m.id+'\')">➕ Add Member</button>';
+  }else if(locked){
+    actions='<span class="locked-tag">✅ Scores finalized & locked forever</span>';
+  }else if(isHost){
+    actions='<button class="btn btn-primary btn-sm" onclick="saveScores(\''+m.id+'\',false)">💾 Save</button><button class="btn btn-danger btn-sm" style="margin-left:8px" onclick="saveScores(\''+m.id+'\',true)">🔒 Lock & Finalize</button>';
+  }else{
+    actions='<span style="font-size:12px;color:var(--muted)">Only the host can enter scores.</span>';
+  }
   var hostName=(m.participants||[]).find(function(p){return p.email===m.hostEmail;});
   hostName=hostName?hostName.name:m.hostEmail;
   var renameBtn=(isSuperAdmin&&locked)?'<button class="btn btn-primary btn-sm" onclick="editLockedMatchName(\''+m.id+'\')">✏️ Edit Match Name</button>':'';
@@ -546,11 +556,54 @@ function toggleMatch(id){
 
 function saveScores(matchId,lock){
   var match=matches.find(function(m){return m.id===matchId;});
-  if(!match||match.locked)return;
-  if(match.hostEmail!==currentUser.email){showToast("Only the host can save scores","error");return;}
+  var isSuperAdmin=currentUser&&currentUser.email===SUPER_ADMIN_EMAIL;
+  if(!match)return;
+  if(!isSuperAdmin){
+    if(match.locked)return;
+    if(match.hostEmail!==currentUser.email){showToast("Only the host can save scores","error");return;}
+  }
   var updated=match.participants.map(function(p,i){var inp=document.getElementById("sc_"+matchId+"_"+i);var val=inp?parseFloat(inp.value):p.points;return Object.assign({},p,{points:(isNaN(val)||!inp||inp.value==="")?null:val});});
   if(lock){if(updated.some(function(p){return p.points===null;})){showToast("Enter points for all players before locking","error");return;}if(!confirm("🔒 Lock scores permanently? This CANNOT be undone."))return;}
-  db.collection("matches").doc(matchId).update({participants:updated,locked:!!lock}).then(function(){showToast(lock?"🔒 Scores locked forever!":"✅ Scores saved!","success");});
+  var payload={participants:updated,locked:lock||match.locked?true:false,lastEditedBy:currentUser.email,lastEditedAt:firebase.firestore.FieldValue.serverTimestamp()};
+  db.collection("matches").doc(matchId).update(payload).then(function(){
+    if(lock)showToast("🔒 Scores locked forever!","success");
+    else if(isSuperAdmin&&match.locked)showToast("✅ Locked match scores updated","success");
+    else showToast("✅ Scores saved!","success");
+  });
+}
+
+function addMemberToMatch(matchId){
+  var match=matches.find(function(m){return m.id===matchId;});
+  if(!match){showToast("Match not found","error");return;}
+  if(!currentUser||currentUser.email!==SUPER_ADMIN_EMAIL){showToast("Only Super Admin can add members here","error");return;}
+
+  var existingEmails=(match.participants||[]).map(function(p){return p.email;});
+  var available=members.filter(function(m){return existingEmails.indexOf(m.email)===-1;});
+  if(!available.length){showToast("No more members available to add","error");return;}
+
+  var listText=available.map(function(m,idx){return (idx+1)+'. '+m.name+' ('+m.email+')';}).join('\n');
+  var pickRaw=prompt('Choose member number to add:\n'+listText);
+  if(pickRaw===null)return;
+  var pick=parseInt(pickRaw,10);
+  if(isNaN(pick)||pick<1||pick>available.length){showToast("Invalid choice","error");return;}
+
+  var selected=available[pick-1];
+  var scoreRaw=prompt('Enter score for '+selected.name+' (leave blank for no score yet):','');
+  if(scoreRaw===null)return;
+  var score=scoreRaw.trim()===''?null:parseFloat(scoreRaw);
+  if(scoreRaw.trim()!==''&&(isNaN(score)||score<0)){showToast("Invalid score","error");return;}
+
+  var participants=(match.participants||[]).slice();
+  participants.push({email:selected.email,name:selected.name,points:score});
+
+  db.collection("matches").doc(matchId).update({
+    participants:participants,
+    locked:!!match.locked,
+    lastEditedBy:currentUser.email,
+    lastEditedAt:firebase.firestore.FieldValue.serverTimestamp()
+  }).then(function(){
+    showToast("✅ Member added to match","success");
+  }).catch(function(e){showToast("Error: "+e.message,"error");});
 }
 
 function editLockedMatchName(matchId){
